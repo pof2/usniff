@@ -28,20 +28,37 @@
 #include "wireless.h"
 
 #ifdef ANDROID
-#define PIDFILE "/data/misc/usniff.pid"
+#define PIDFILE "/data/misc/usniff.%s.pid"
 #define TCPDUMP "/system/bin/tcpdump"
-#define OUTPUT "/sdcard/usniff.pcap"
+#define OUTPUT "/sdcard/usniff-%s.pcap"
 #else
-#define PIDFILE "/var/run/usniff.pid"
+#define PIDFILE "/var/run/usniff.%s.pid"
 #define TCPDUMP "/usr/sbin/tcpdump"
-#define OUTPUT "./usniff.pcap"
+#define OUTPUT "./usniff-%s.pcap"
 #endif
 
-#define MONITOR_IFACE "usniff0"
+#define MONITOR_NAME "%s.usniff"
 
-static int pid_write(void)
+static int get_pidfile_name(const char *iface, char *buf, int bufsize)
 {
-	FILE *f = fopen(PIDFILE, "w");
+	int ret;
+
+	ret = snprintf(buf, bufsize, PIDFILE, iface);
+	if (ret >= bufsize)
+		return -E2BIG;
+
+	return 0;
+}
+
+
+static int pid_write(const char *iface)
+{
+	char buf[100];
+
+	if (get_pidfile_name(iface, buf, sizeof(buf)))
+		return -E2BIG;
+
+	FILE *f = fopen(buf, "w");
 	if (!f)
 		return -1;
 	fprintf(f, "%d\n", getpid());
@@ -49,11 +66,15 @@ static int pid_write(void)
 	return 0;
 }
 
-static pid_t pid_read(void)
+static pid_t pid_read(const char *iface)
 {
 	char buf[100];
 	int pid = 0, ret;
-	FILE *f = fopen(PIDFILE, "r");
+
+	if (get_pidfile_name(iface, buf, sizeof(buf)))
+		return -E2BIG;
+
+	FILE *f = fopen(buf, "r");
 	if (!f)
 		return -1;
 	ret = fscanf(f, "%d", &pid);
@@ -75,21 +96,28 @@ static pid_t pid_read(void)
 	return pid;
 }
 
-static int child_main(const char *iface)
+static int child_main(const char *iface, const char *real_iface)
 {
 	int ret;
+	char output[100];
 	const char *env[] = { (char *) 0 };
 
-	pid_write();
+
+	ret = snprintf(output, sizeof(output), OUTPUT, iface);
+	if (ret >= sizeof(output))
+		exit(E2BIG);
+
+	pid_write(iface);
 	umask(0077);
-	ret = execle(TCPDUMP, TCPDUMP, "-w", OUTPUT, "-i", iface, "-s", "65535", (char *) 0, env); 
+	ret = execle(TCPDUMP, TCPDUMP, "-w", output, "-i", real_iface,
+		     "-s", "65535", (char *) 0, env); 
 	if (ret) {
 		exit(errno);
 	}
 	exit(0);
 }
 
-static int start_dump(const char *iface)
+static int start_dump(const char *iface, const char *real_iface)
 {
 	pid_t ret;
 	ret = fork();
@@ -99,7 +127,7 @@ static int start_dump(const char *iface)
 		exit(1);
 		break;
 	case 0:
-		child_main(iface);
+		child_main(iface, real_iface);
 		break;
 	default:
 		break;
@@ -124,16 +152,14 @@ static enum nl80211_channel_type str_to_chan_type(const char *s)
 	return ret;
 }
 
-static int prepare_iface(const char *iface, const char *freq_s, const char *type_s)
+static int prepare_iface(const char *iface, const char *real_iface, const char *freq_s, const char *type_s)
 {
-	const char *real_iface;
 	char *t;
 	int phyidx = 0, ret;
 	int freq = -1;
 	enum nl80211_channel_type chan_type = -1;
 
 	if (!strncmp(iface, "phy", 3)) {
-		real_iface = MONITOR_IFACE;
 		if (strlen(iface) < 4)
 			return -1;
 		phyidx = strtoul(iface + 3, &t, 0);
@@ -152,36 +178,48 @@ static int prepare_iface(const char *iface, const char *freq_s, const char *type
 				return -EINVAL;
 		}
 		
-		ret = add_monitor(phyidx, MONITOR_IFACE, freq, chan_type);
+		ret = add_monitor(phyidx, real_iface, freq, chan_type);
 		if (ret) {
 			perror("Failed to create monitor interface");
 			return ret;
 		}
 	}
-	else
-		real_iface = iface;
 
 	ret = interface_up(real_iface);
 	if (ret) {
-		perror("Failed to bring up monitor interface");
+		fprintf(stderr, "Failed to bring up interface %s: %s", real_iface, strerror(errno));
 		if (!strncmp(iface, "phy", 3))
-			del_monitor(MONITOR_IFACE);
+			del_monitor(real_iface);
 		return ret;
 	}
 	return 0;
 }
 
-static const char * translate_ifname(const char *orig)
+static int translate_ifname(const char *orig, char *buf, int bufsize)
 {
-	return (!strncmp(orig, "phy", 3)) ? MONITOR_IFACE : orig;
+	int ret;
+
+	if (strncmp(orig, "phy", 3)) {
+		if (strlen(orig) >= bufsize)
+			return -E2BIG;
+		strcpy(buf, orig);
+	}
+	else {
+		ret = snprintf(buf, bufsize, MONITOR_NAME, orig);
+		if (ret >= bufsize)
+			return -E2BIG;
+	}
+
+	return 0;
 }
 
 static void usage(void)
 {
 	fprintf(stderr, "Usage:\n");
-	fprintf(stderr, "  usniff start wlanX|phyX - phyX for air sniffing\n");
-	fprintf(stderr, "  usniff stop wlanX|phyX\n");
-	fprintf(stderr, "  usniff status\n");
+	fprintf(stderr, "  usniff start <iface|phy> [freq [NOHT|HT20|HT40-|HT40+]\n");
+	fprintf(stderr, "  usniff stop <iface|phy>\n");
+	fprintf(stderr, "  usniff status <iface|phy>\n");
+
 }
 
 int main(int argc, char **argv)
@@ -189,18 +227,29 @@ int main(int argc, char **argv)
 	int ret;
 	pid_t pid;
 	const char *iface;
+	char real_iface[100];
 
-	pid = pid_read();
+	if (argc < 3) {
+		usage();
+		exit(EINVAL);
+	}
+
+	iface = argv[2];
+	ret = translate_ifname(iface, real_iface, sizeof(real_iface));
+	if (ret)
+		exit(E2BIG);
+
+	pid = pid_read(iface);
+
 	if (argc == 3 && strcmp(argv[1], "stop") == 0) {
 		if (pid == -1) {
 			fprintf(stderr, "Not running\n");
 			exit(ENOENT);
 		}
 
-		iface = translate_ifname(argv[2]);
 		kill(pid, SIGINT);
-		if (!strcmp(iface, MONITOR_IFACE))
-			del_monitor(MONITOR_IFACE);
+		if (!strncmp(iface, "phy", 3))
+			del_monitor(real_iface);
 	}
 	else if ((argc == 3 || argc == 5) && strcmp(argv[1], "start") == 0) {
 		if (pid > 0) {
@@ -208,17 +257,17 @@ int main(int argc, char **argv)
 			exit(EBUSY);
 		}
 		if (argc == 3)
-			ret = prepare_iface(argv[2], 0, 0);
+			ret = prepare_iface(iface, real_iface, 0, 0);
 		else
-			ret = prepare_iface(argv[2], argv[3], argv[4]);
+			ret = prepare_iface(iface, real_iface, argv[3], argv[4]);
 
 		if (ret < 0) {
 			fprintf(stderr, "Bad Interface\n");
 			exit(-ret);
 		}
-		start_dump(translate_ifname(argv[2]));
+		start_dump(iface, real_iface);
 	}
-	else if (argc == 2 && strcmp(argv[1], "status") == 0) {
+	else if (argc == 3 && strcmp(argv[1], "status") == 0) {
 		if (pid > 0) {
 			printf("Running as pid %d\n", pid);
 			exit(0);
