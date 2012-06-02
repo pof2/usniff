@@ -20,14 +20,23 @@
 #include <string.h>
 
 #include <sys/types.h>
+#include <sys/stat.h>
+
 #include <signal.h>
 #include <errno.h>
 
 #include "wireless.h"
 
+#ifdef ANDROID
+#define PIDFILE "/data/misc/usniff.pid"
+#define TCPDUMP "/system/bin/tcpdump"
+#define OUTPUT "/sdcard/usniff.pcap"
+#else
 #define PIDFILE "/var/run/usniff.pid"
 #define TCPDUMP "/usr/sbin/tcpdump"
-#define OUTPUT "/tmp/usniff.pcap"
+#define OUTPUT "./usniff.pcap"
+#endif
+
 #define MONITOR_IFACE "usniff0"
 
 static int pid_write(void)
@@ -71,9 +80,8 @@ static int child_main(const char *iface)
 	int ret;
 	const char *env[] = { (char *) 0 };
 
-	/* TODO: Close all fd's */
-
 	pid_write();
+	umask(0077);
 	ret = execle(TCPDUMP, TCPDUMP, "-w", OUTPUT, "-i", iface, "-s", "65535", (char *) 0, env); 
 	if (ret) {
 		exit(errno);
@@ -117,15 +125,18 @@ static int prepare_iface(const char *iface)
 			perror("Failed to create monitor interface");
 			return ret;
 		}
-		ret = interface_up(MONITOR_IFACE);
-		if (ret) {
-			perror("Failed to bring up monitor interface");
-			del_monitor(MONITOR_IFACE);
-			return ret;
-		}
-		return 0;
 	}
-	return -1;
+	else {
+		return -1;
+	}
+
+	ret = interface_up(MONITOR_IFACE);
+	if (ret) {
+		perror("Failed to bring up monitor interface");
+		del_monitor(MONITOR_IFACE);
+		return ret;
+	}
+	return 0;
 }
 
 static const char * translate_ifname(const char *orig)
@@ -133,15 +144,19 @@ static const char * translate_ifname(const char *orig)
 	return (!strncmp(orig, "phy", 3)) ? MONITOR_IFACE : orig;
 }
 
+static void usage(void)
+{
+	fprintf(stderr, "Usage:\n");
+	fprintf(stderr, "  usniff start wlanX|phyX - phyX for air sniffing\n");
+	fprintf(stderr, "  usniff stop wlanX|phyX\n");
+	fprintf(stderr, "  usniff status\n");
+}
 
 int main(int argc, char **argv)
 {
 	int ret;
 	pid_t pid;
 	const char *iface;
-
-	if (geteuid() != 0)
-		fprintf(stderr, "Not root %d/%d. unlikely to work\n", getuid(), geteuid());
 
 	pid = pid_read();
 	if (argc == 3 && strcmp(argv[1], "stop") == 0) {
@@ -177,9 +192,8 @@ int main(int argc, char **argv)
 			exit(ENOENT);
 		}
 	}
-	else {
-		fprintf(stderr, "usage\n");
-	}
+	else
+		usage();
 
 	return 0;
 }
