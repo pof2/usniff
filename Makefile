@@ -18,3 +18,8 @@ usniff:	$(OBJS)
 
 clean:
 	$(Q)rm -f usniff *.o *~ *.gz *-stamp
+
+install:
+	cp usniff /usr/bin/
+	chmod a+s /usr/bin/usniff
+
