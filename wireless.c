@@ -55,7 +55,7 @@ static int ack_handler(struct nl_msg *msg, void *arg)
 	return NL_STOP;
 }
 
-int nl80211_init(void)
+static int nl80211_init(void)
 {
 	int err;
 
@@ -85,11 +85,37 @@ int nl80211_init(void)
 	return err;
 }
 
-int add_monitor(int phyidx, char *name)
+static int do_cmd(struct nl_msg *msg)
 {
-	int err;
-	struct nl_msg *msg;
 	struct nl_cb *cb;
+	int err;
+
+	if (!nl_sock)
+		return -ENOLINK;
+
+	cb = nl_cb_alloc(NL_CB_DEFAULT);
+	err = nl_send_auto_complete(nl_sock, msg);
+	if (err < 0)
+		goto out;
+
+	err = 1;
+
+	nl_cb_err(cb, NL_CB_CUSTOM, error_handler, &err);
+	nl_cb_set(cb, NL_CB_FINISH, NL_CB_CUSTOM, finish_handler, &err);
+	nl_cb_set(cb, NL_CB_ACK, NL_CB_CUSTOM, ack_handler, &err);
+
+	while (err > 0)
+		nl_recvmsgs(nl_sock, cb);
+ out:
+	nl_cb_put(cb);
+
+	return err;
+}
+
+int del_monitor(const char *iface)
+{
+	int devidx;
+	struct nl_msg *msg;
 
 	nl80211_init();
 	msg = nlmsg_alloc();
@@ -98,7 +124,30 @@ int add_monitor(int phyidx, char *name)
 		return 2;
 	}
 
-	cb = nl_cb_alloc(NL_CB_DEFAULT);
+	devidx = if_nametoindex(iface);
+	genlmsg_put(msg, 0, 0, nl80211_id, 0,
+		    0, NL80211_CMD_DEL_INTERFACE, 0);
+	NLA_PUT_U32(msg, NL80211_ATTR_IFINDEX, devidx);
+
+	return do_cmd(msg);
+
+nla_put_failure:
+	fprintf(stderr, "building message failed\n");
+	return 2;
+}
+
+int add_monitor(int phyidx, const char *name, int freq, enum nl80211_channel_type chan_type)
+{
+	int ret, devidx;
+	struct nl_msg *msg;
+
+	printf("%s %d %d\n", name, freq, chan_type);
+	nl80211_init();
+	msg = nlmsg_alloc();
+	if (!msg) {
+		fprintf(stderr, "failed to allocate netlink message\n");
+		return 2;
+	}
 
 	genlmsg_put(msg, 0, 0, nl80211_id, 0,
 		    0, NL80211_CMD_NEW_INTERFACE, 0);
@@ -107,76 +156,39 @@ int add_monitor(int phyidx, char *name)
 	NLA_PUT_STRING(msg, NL80211_ATTR_IFNAME, name);
 	NLA_PUT_U32(msg, NL80211_ATTR_IFTYPE, NL80211_IFTYPE_MONITOR);
 
+	ret = do_cmd(msg);
 
-	err = nl_send_auto_complete(nl_sock, msg);
-	if (err < 0)
-		goto out;
-
-	err = 1;
-
-	nl_cb_err(cb, NL_CB_CUSTOM, error_handler, &err);
-	nl_cb_set(cb, NL_CB_FINISH, NL_CB_CUSTOM, finish_handler, &err);
-	nl_cb_set(cb, NL_CB_ACK, NL_CB_CUSTOM, ack_handler, &err);
-
-	while (err > 0)
-		nl_recvmsgs(nl_sock, cb);
-out:
-	nl_cb_put(cb);
-
-	return 0;
-
-nla_put_failure:
-	fprintf(stderr, "building message failed\n");
-	return 2;
-
-}
-
-int del_monitor(char *iface)
-{
-	int err, devidx;
-	struct nl_msg *msg;
-	struct nl_cb *cb;
-
-	nl80211_init();
-	msg = nlmsg_alloc();
-	if (!msg) {
-		fprintf(stderr, "failed to allocate netlink message\n");
-		return 2;
+	if (ret) {
+		fprintf(stderr, "failed to create monitor interface for phy%d\n", phyidx);
+		return ret;
 	}
 
-	cb = nl_cb_alloc(NL_CB_DEFAULT);
+	if (freq == -1)
+		return 0;
 
-	devidx = if_nametoindex(iface);
+
+	msg = nlmsg_alloc();
+	devidx = if_nametoindex(name);
 	genlmsg_put(msg, 0, 0, nl80211_id, 0,
-		    0, NL80211_CMD_DEL_INTERFACE, 0);
+		    0, NL80211_CMD_SET_CHANNEL, 0);
 	NLA_PUT_U32(msg, NL80211_ATTR_IFINDEX, devidx);
+	NLA_PUT_U32(msg, NL80211_ATTR_WIPHY_FREQ, freq);
 
-	err = nl_send_auto_complete(nl_sock, msg);
-	if (err < 0)
-		goto out;
+	if (chan_type != -1)
+		NLA_PUT_U32(msg, NL80211_ATTR_WIPHY_CHANNEL_TYPE, chan_type);
 
-	err = 1;
-
-	nl_cb_err(cb, NL_CB_CUSTOM, error_handler, &err);
-	nl_cb_set(cb, NL_CB_FINISH, NL_CB_CUSTOM, finish_handler, &err);
-	nl_cb_set(cb, NL_CB_ACK, NL_CB_CUSTOM, ack_handler, &err);
-
-	while (err > 0)
-		nl_recvmsgs(nl_sock, cb);
-out:
-	nl_cb_put(cb);
-
-	return 0;
+	ret = do_cmd(msg);
+	if (ret)
+		del_monitor(name);
+	return ret;
 
 nla_put_failure:
 	fprintf(stderr, "building message failed\n");
 	return 2;
 
-
-	return 0;
 }
 
-int interface_up(char *ifname)
+int interface_up(const char *ifname)
 {
 	int sock;
 	struct ifreq ifreq;
@@ -197,6 +209,7 @@ int interface_up(char *ifname)
 
 	close(sock);
 	return 0;
+
 out_err:
 	close(sock);
 	return -1;

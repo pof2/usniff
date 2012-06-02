@@ -17,9 +17,11 @@
 #ifndef WIRELESS_H
 #define WIRELESS_H
 
-int add_monitor(int phyidx, char *name);
-int del_monitor(char *iface);
-int interface_up(char *ifname);
+#include <linux/nl80211.h>
+
+int add_monitor(int phyidx, const char *name, int freq, enum nl80211_channel_type chan_type);
+int del_monitor(const char *iface);
+int interface_up(const char *ifname);
 
 #endif /* WIRELESS_H */
 

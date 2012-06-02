@@ -107,33 +107,65 @@ static int start_dump(const char *iface)
 	return 0;
 }
 
-static int prepare_iface(const char *iface)
+static enum nl80211_channel_type str_to_chan_type(const char *s)
 {
+	int ret = -1;
+	if (!s)
+		return -1;
+
+	if (!strcmp(s, "NOHT"))
+		ret = NL80211_CHAN_NO_HT;
+	else if (!strcmp(s, "HT20"))
+		ret = NL80211_CHAN_HT20;
+	else if (!strcmp(s, "HT40-"))
+		ret = NL80211_CHAN_HT40MINUS;
+	else if (!strcmp(s, "HT40+"))
+		ret = NL80211_CHAN_HT40PLUS;
+	return ret;
+}
+
+static int prepare_iface(const char *iface, const char *freq_s, const char *type_s)
+{
+	const char *real_iface;
 	char *t;
 	int phyidx = 0, ret;
+	int freq = -1;
+	enum nl80211_channel_type chan_type = -1;
 
-	if (!strncmp(iface, "wlan", 4))
-		return 0;
 	if (!strncmp(iface, "phy", 3)) {
+		real_iface = MONITOR_IFACE;
 		if (strlen(iface) < 4)
 			return -1;
 		phyidx = strtoul(iface + 3, &t, 0);
 		if (*t != '\0')
-			return -1;
-		ret = add_monitor(phyidx, MONITOR_IFACE);
+			return -EINVAL;
+
+		if (freq_s) {
+			freq = strtoul(freq_s, &t, 0);
+			if (*t != '\0')
+				return -EINVAL;
+		}
+
+		if (type_s) {
+			chan_type = str_to_chan_type(type_s);
+			if (chan_type == -1)
+				return -EINVAL;
+		}
+		
+		ret = add_monitor(phyidx, MONITOR_IFACE, freq, chan_type);
 		if (ret) {
 			perror("Failed to create monitor interface");
 			return ret;
 		}
 	}
-	else {
-		return -1;
-	}
+	else
+		real_iface = iface;
 
-	ret = interface_up(MONITOR_IFACE);
+	ret = interface_up(real_iface);
 	if (ret) {
 		perror("Failed to bring up monitor interface");
-		del_monitor(MONITOR_IFACE);
+		if (!strncmp(iface, "phy", 3))
+			del_monitor(MONITOR_IFACE);
 		return ret;
 	}
 	return 0;
@@ -170,13 +202,17 @@ int main(int argc, char **argv)
 		if (!strcmp(iface, MONITOR_IFACE))
 			del_monitor(MONITOR_IFACE);
 	}
-	else if (argc == 3 && strcmp(argv[1], "start") == 0) {
+	else if ((argc == 3 || argc == 5) && strcmp(argv[1], "start") == 0) {
 		if (pid > 0) {
 			fprintf(stderr, "Already running\n");
 			exit(EBUSY);
 		}
-		ret = prepare_iface(argv[2]);
-		if ( ret < 0) {
+		if (argc == 3)
+			ret = prepare_iface(argv[2], 0, 0);
+		else
+			ret = prepare_iface(argv[2], argv[3], argv[4]);
+
+		if (ret < 0) {
 			fprintf(stderr, "Bad Interface\n");
 			exit(-ret);
 		}
