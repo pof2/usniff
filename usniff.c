@@ -72,11 +72,11 @@ static pid_t pid_read(const char *iface)
 	int pid = 0, ret;
 
 	if (get_pidfile_name(iface, buf, sizeof(buf)))
-		return -E2BIG;
+		return -ENAMETOLONG;
 
 	FILE *f = fopen(buf, "r");
 	if (!f)
-		return -1;
+		return -ENOENT;
 	ret = fscanf(f, "%d", &pid);
 	fclose(f);
 	if (ret != 1) {
@@ -85,14 +85,13 @@ static pid_t pid_read(const char *iface)
 
 	ret = snprintf(buf, sizeof(buf), "/proc/%d", pid);
 	if (ret >= sizeof(buf))
-		return -1;
+		return -ENOENT;
 
 	f = fopen(buf, "r");
 	if (!f)
-		return -1;
+		return -ENOENT;
 
 	fclose(f);
-
 	return pid;
 }
 
@@ -102,18 +101,16 @@ static int child_main(const char *iface, const char *real_iface)
 	char output[100];
 	const char *env[] = { (char *) 0 };
 
-
 	ret = snprintf(output, sizeof(output), OUTPUT, iface);
 	if (ret >= sizeof(output))
-		exit(E2BIG);
+		exit(ENAMETOLONG);
 
 	pid_write(iface);
 	umask(0077);
 	ret = execle(TCPDUMP, TCPDUMP, "-w", output, "-i", real_iface,
 		     "-s", "65535", (char *) 0, env); 
-	if (ret) {
+	if (ret)
 		exit(errno);
-	}
 	exit(0);
 }
 
@@ -124,7 +121,7 @@ static int start_dump(const char *iface, const char *real_iface)
 
 	switch (ret) {
 	case -1:
-		exit(1);
+		exit(errno);
 		break;
 	case 0:
 		child_main(iface, real_iface);
@@ -137,9 +134,9 @@ static int start_dump(const char *iface, const char *real_iface)
 
 static enum nl80211_channel_type str_to_chan_type(const char *s)
 {
-	int ret = -1;
+	int ret = -EINVAL;
 	if (!s)
-		return -1;
+		return -EINVAL;
 
 	if (!strcmp(s, "NOHT"))
 		ret = NL80211_CHAN_NO_HT;
@@ -152,6 +149,7 @@ static enum nl80211_channel_type str_to_chan_type(const char *s)
 	return ret;
 }
 
+/* Create a monitor if interface is phy and bring interface up */
 static int prepare_iface(const char *iface, const char *real_iface, const char *freq_s, const char *type_s)
 {
 	char *t;
@@ -161,7 +159,7 @@ static int prepare_iface(const char *iface, const char *real_iface, const char *
 
 	if (!strncmp(iface, "phy", 3)) {
 		if (strlen(iface) < 4)
-			return -1;
+			return -EINVAL;
 		phyidx = strtoul(iface + 3, &t, 0);
 		if (*t != '\0')
 			return -EINVAL;
@@ -195,19 +193,20 @@ static int prepare_iface(const char *iface, const char *real_iface, const char *
 	return 0;
 }
 
+/* returns phyX.usniff if "orig" is phy, otherwise "orig" is returned */
 static int translate_ifname(const char *orig, char *buf, int bufsize)
 {
 	int ret;
 
 	if (strncmp(orig, "phy", 3)) {
 		if (strlen(orig) >= bufsize)
-			return -E2BIG;
+			return -ENAMETOLONG;
 		strcpy(buf, orig);
 	}
 	else {
 		ret = snprintf(buf, bufsize, MONITOR_NAME, orig);
 		if (ret >= bufsize)
-			return -E2BIG;
+			return -ENAMETOLONG;
 	}
 
 	return 0;
@@ -219,7 +218,6 @@ static void usage(void)
 	fprintf(stderr, "  usniff start <iface|phy> [freq [NOHT|HT20|HT40-|HT40+]\n");
 	fprintf(stderr, "  usniff stop <iface|phy>\n");
 	fprintf(stderr, "  usniff status <iface|phy>\n");
-
 }
 
 int main(int argc, char **argv)
@@ -237,12 +235,12 @@ int main(int argc, char **argv)
 	iface = argv[2];
 	ret = translate_ifname(iface, real_iface, sizeof(real_iface));
 	if (ret)
-		exit(E2BIG);
+		exit(ENAMETOLONG);
 
 	pid = pid_read(iface);
 
 	if (argc == 3 && strcmp(argv[1], "stop") == 0) {
-		if (pid == -1) {
+		if (pid < 0) {
 			fprintf(stderr, "Not running\n");
 			exit(ENOENT);
 		}

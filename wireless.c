@@ -80,7 +80,7 @@ static int nl80211_init(void)
 
 	return 0;
 
- out_handle_destroy:
+out_handle_destroy:
 	nl_socket_free(nl_sock);
 	return err;
 }
@@ -106,7 +106,7 @@ static int do_cmd(struct nl_msg *msg)
 
 	while (err > 0)
 		nl_recvmsgs(nl_sock, cb);
- out:
+out:
 	nl_cb_put(cb);
 
 	return err;
@@ -117,6 +117,10 @@ int del_monitor(const char *iface)
 	int devidx;
 	struct nl_msg *msg;
 
+	devidx = if_nametoindex(iface);
+	if (!devidx)
+		return -ENOENT;
+
 	nl80211_init();
 	msg = nlmsg_alloc();
 	if (!msg) {
@@ -124,7 +128,6 @@ int del_monitor(const char *iface)
 		return 2;
 	}
 
-	devidx = if_nametoindex(iface);
 	genlmsg_put(msg, 0, 0, nl80211_id, 0,
 		    0, NL80211_CMD_DEL_INTERFACE, 0);
 	NLA_PUT_U32(msg, NL80211_ATTR_IFINDEX, devidx);
@@ -166,9 +169,13 @@ int add_monitor(int phyidx, const char *name, int freq, enum nl80211_channel_typ
 	if (freq == -1)
 		return 0;
 
-
 	msg = nlmsg_alloc();
 	devidx = if_nametoindex(name);
+	if (!devidx) {
+		ret = -ENOENT;
+		goto out_del;
+	}
+
 	genlmsg_put(msg, 0, 0, nl80211_id, 0,
 		    0, NL80211_CMD_SET_CHANNEL, 0);
 	NLA_PUT_U32(msg, NL80211_ATTR_IFINDEX, devidx);
@@ -179,13 +186,16 @@ int add_monitor(int phyidx, const char *name, int freq, enum nl80211_channel_typ
 
 	ret = do_cmd(msg);
 	if (ret)
-		del_monitor(name);
-	return ret;
+		goto out_del;
+	return 0;
+
+out_del:
+	del_monitor(name);
+	return -1;
 
 nla_put_failure:
 	fprintf(stderr, "building message failed\n");
 	return 2;
-
 }
 
 int interface_up(const char *ifname)
@@ -213,5 +223,4 @@ int interface_up(const char *ifname)
 out_err:
 	close(sock);
 	return -1;
-
 }
