@@ -144,7 +144,6 @@ int add_monitor(int phyidx, const char *name, int freq, enum nl80211_channel_typ
 	int ret, devidx;
 	struct nl_msg *msg;
 
-	printf("%s %d %d\n", name, freq, chan_type);
 	nl80211_init();
 	msg = nlmsg_alloc();
 	if (!msg) {
@@ -161,7 +160,7 @@ int add_monitor(int phyidx, const char *name, int freq, enum nl80211_channel_typ
 
 	ret = do_cmd(msg);
 
-	if (ret) {
+	if (ret && ret != -ENFILE) {
 		fprintf(stderr, "failed to create monitor interface for phy%d\n", phyidx);
 		return ret;
 	}

@@ -18,6 +18,7 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -28,62 +29,67 @@
 #include "wireless.h"
 
 #ifdef ANDROID
-#define PIDFILE "/data/misc/usniff.%s.pid"
+#define STATEFILE "/data/misc/usniff-%s.state"
 #define TCPDUMP "/system/xbin/tcpdump"
-#define OUTPUT "/data/misc/usniff-%s.pcap"
+#define OUTPUT "/data/misc/usniff-%s-%s.pcap"
 #else
-#define PIDFILE "/var/run/usniff.%s.pid"
+#define STATEFILE "/var/run/usniff-%s.state"
 #define TCPDUMP "/usr/sbin/tcpdump"
-#define OUTPUT "./usniff-%s.pcap"
+#define OUTPUT "./usniff-%s-%s.pcap"
 #endif
 
 #define MONITOR_NAME "%s.usniff"
 
-static int get_pidfile_name(const char *iface, char *buf, int bufsize)
+static int get_statefile_name(const char *iface, char *buf, int bufsize)
 {
 	int ret;
 
-	ret = snprintf(buf, bufsize, PIDFILE, iface);
+	ret = snprintf(buf, bufsize, STATEFILE, iface);
 	if (ret >= bufsize)
 		return -E2BIG;
 
 	return 0;
 }
 
-
-static int pid_write(const char *iface)
+static int state_write(const char *iface, const char *output)
 {
 	char buf[100];
 
-	if (get_pidfile_name(iface, buf, sizeof(buf)))
+	if (get_statefile_name(iface, buf, sizeof(buf)))
 		return -E2BIG;
 
 	FILE *f = fopen(buf, "w");
 	if (!f)
 		return -1;
 	fprintf(f, "%d\n", getpid());
+	fprintf(f, "%s\n", output);
 	fclose(f);
 	return 0;
 }
 
-static pid_t pid_read(const char *iface)
+static pid_t state_read(const char *iface, char *output, size_t output_size)
 {
 	char buf[100];
 	pid_t pid;
 	int ret;
 
-	if (get_pidfile_name(iface, buf, sizeof(buf)))
+	if (get_statefile_name(iface, buf, sizeof(buf)))
 		return -E2BIG;
 
 	FILE *f = fopen(buf, "r");
 	if (!f)
 		return -ENOENT;
-	ret = fscanf(f, "%d", &pid);
+	ret = fscanf(f, "%d\n", &pid);
+	if (ret != 1)
+		goto err;
+	if (!fgets(output, output_size, f))
+		goto err;
 	fclose(f);
-	if (ret != 1) {
-		return -1;
-	}
 
+	if (strlen(output))
+		output[strlen(output) - 1] = 0; 
+
+	/* Check for stale pid */
 	ret = snprintf(buf, sizeof(buf), "/proc/%d", pid);
 	if (ret >= (int) sizeof(buf))
 		return -ENOENT;
@@ -94,19 +100,36 @@ static pid_t pid_read(const char *iface)
 
 	fclose(f);
 	return pid;
+
+err:
+	fclose(f);
+	return -1;
 }
 
 static int child_main(const char *iface, const char *real_iface)
 {
 	int ret;
-	char output[100];
+	char output[100], timestr[20];
 	const char *env[] = { (char *) 0 };
+	time_t epoch;
+	struct tm *tm;
 
-	ret = snprintf(output, sizeof(output), OUTPUT, iface);
+	epoch = time(NULL);
+	tm = localtime(&epoch);
+	if (!tm) {
+		perror("localtime failed");
+		exit(EINVAL);
+	}
+	if (!strftime(timestr, sizeof(timestr), "%Y%m%d-%H%M%S", tm)) {
+		perror("strftime failed");
+		exit(EINVAL);
+	}
+
+	ret = snprintf(output, sizeof(output), OUTPUT, iface, timestr);
 	if (ret >= (int) sizeof(output))
 		exit(E2BIG);
 
-	pid_write(iface);
+	state_write(iface, output);
 	umask(0077);
 	ret = execle(TCPDUMP, TCPDUMP, "-w", output, "-i", real_iface,
 		     "-s", "65535", (char *) 0, env); 
@@ -227,6 +250,7 @@ int main(int argc, char **argv)
 	pid_t pid;
 	const char *iface;
 	char real_iface[100];
+	char output_file[100];
 
 	if (argc < 3) {
 		usage();
@@ -238,7 +262,7 @@ int main(int argc, char **argv)
 	if (ret)
 		exit(E2BIG);
 
-	pid = pid_read(iface);
+	pid = state_read(iface, output_file, sizeof(output_file));
 
 	if (argc == 3 && strcmp(argv[1], "stop") == 0) {
 		if (pid < 0) {
@@ -268,11 +292,11 @@ int main(int argc, char **argv)
 	}
 	else if (argc == 3 && strcmp(argv[1], "status") == 0) {
 		if (pid > 0) {
-			printf("Running as pid %d\n", pid);
+			printf("Running,%d,%s\n", pid, output_file);
 			exit(0);
 		}
 		else {
-			printf("Not running\n");
+			printf("Stopped\n");
 			exit(ENOENT);
 		}
 	}
