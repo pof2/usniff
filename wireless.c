@@ -28,7 +28,7 @@
 #include <netlink/msg.h>
 #include <netlink/attr.h>
 
-#include <linux/nl80211.h>
+#include "wireless.h"
 
 static struct nl_sock *nl_sock;
 static int nl80211_id;

@@ -29,8 +29,8 @@
 
 #ifdef ANDROID
 #define PIDFILE "/data/misc/usniff.%s.pid"
-#define TCPDUMP "/system/bin/tcpdump"
-#define OUTPUT "/sdcard/usniff-%s.pcap"
+#define TCPDUMP "/system/xbin/tcpdump"
+#define OUTPUT "/data/misc/usniff-%s.pcap"
 #else
 #define PIDFILE "/var/run/usniff.%s.pid"
 #define TCPDUMP "/usr/sbin/tcpdump"
@@ -69,10 +69,11 @@ static int pid_write(const char *iface)
 static pid_t pid_read(const char *iface)
 {
 	char buf[100];
-	int pid = 0, ret;
+	pid_t pid;
+	int ret;
 
 	if (get_pidfile_name(iface, buf, sizeof(buf)))
-		return -ENAMETOLONG;
+		return -E2BIG;
 
 	FILE *f = fopen(buf, "r");
 	if (!f)
@@ -84,7 +85,7 @@ static pid_t pid_read(const char *iface)
 	}
 
 	ret = snprintf(buf, sizeof(buf), "/proc/%d", pid);
-	if (ret >= sizeof(buf))
+	if (ret >= (int) sizeof(buf))
 		return -ENOENT;
 
 	f = fopen(buf, "r");
@@ -102,8 +103,8 @@ static int child_main(const char *iface, const char *real_iface)
 	const char *env[] = { (char *) 0 };
 
 	ret = snprintf(output, sizeof(output), OUTPUT, iface);
-	if (ret >= sizeof(output))
-		exit(ENAMETOLONG);
+	if (ret >= (int) sizeof(output))
+		exit(E2BIG);
 
 	pid_write(iface);
 	umask(0077);
@@ -172,7 +173,7 @@ static int prepare_iface(const char *iface, const char *real_iface, const char *
 
 		if (type_s) {
 			chan_type = str_to_chan_type(type_s);
-			if (chan_type == -1)
+			if ((int) chan_type == -1)
 				return -EINVAL;
 		}
 		
@@ -194,19 +195,19 @@ static int prepare_iface(const char *iface, const char *real_iface, const char *
 }
 
 /* returns phyX.usniff if "orig" is phy, otherwise "orig" is returned */
-static int translate_ifname(const char *orig, char *buf, int bufsize)
+static int translate_ifname(const char *orig, char *buf, unsigned int bufsize)
 {
 	int ret;
 
 	if (strncmp(orig, "phy", 3)) {
 		if (strlen(orig) >= bufsize)
-			return -ENAMETOLONG;
+			return -E2BIG;
 		strcpy(buf, orig);
 	}
 	else {
 		ret = snprintf(buf, bufsize, MONITOR_NAME, orig);
-		if (ret >= bufsize)
-			return -ENAMETOLONG;
+		if (ret >= (int) bufsize)
+			return -E2BIG;
 	}
 
 	return 0;
@@ -235,7 +236,7 @@ int main(int argc, char **argv)
 	iface = argv[2];
 	ret = translate_ifname(iface, real_iface, sizeof(real_iface));
 	if (ret)
-		exit(ENAMETOLONG);
+		exit(E2BIG);
 
 	pid = pid_read(iface);
 
